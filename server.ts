@@ -7,14 +7,26 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_FILE = path.join(__dirname, "storage.json");
+const DATA_FILE = path.join(__dirname, "data.json");
 
 // 初始化数据文件
 async function initStorage() {
   try {
-    await fs.access(DATA_FILE);
-  } catch {
-    await fs.writeFile(DATA_FILE, JSON.stringify({ accounts: [], records: {} }, null, 2));
+    console.log(`[INIT] 正在初始化数据文件: ${DATA_FILE}`);
+    try {
+      await fs.access(DATA_FILE);
+      const content = await fs.readFile(DATA_FILE, "utf-8");
+      if (!content.trim()) throw new Error("Empty file");
+      JSON.parse(content); // 验证 JSON 格式
+      console.log(`[INIT] 数据加载成功，路径: ${DATA_FILE}`);
+    } catch (err: any) {
+      console.log(`[INIT] 数据文件缺失或损坏，正在重置: ${err.message}`);
+      const defaultData = { accounts: [], records: {} };
+      await fs.writeFile(DATA_FILE, JSON.stringify(defaultData, null, 2), "utf-8");
+      console.log(`[INIT] 初始数据已写入: ${DATA_FILE}`);
+    }
+  } catch (outerErr: any) {
+    console.error(`[INIT] 致命错误: 无法初始化存储! ${outerErr.message}`);
   }
 }
 
