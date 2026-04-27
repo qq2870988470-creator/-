@@ -74,7 +74,16 @@ interface Entry {
 interface Account {
   id: string;
   name: string;
+  color?: string;
 }
+
+const generateId = () => {
+  try {
+    return crypto.randomUUID();
+  } catch (e) {
+    return Math.random().toString(36).substring(2, 11);
+  }
+};
 
 const ACCOUNTS_STORAGE_KEY = 'huazhu_accounts_list';
 const CURRENT_ACCOUNT_ID_KEY = 'huazhu_current_account_id';
@@ -146,43 +155,40 @@ export default function App() {
       const savedCurrentId = localStorage.getItem(CURRENT_ACCOUNT_ID_KEY);
       
       let loadedAccounts: Account[] = [];
-      if (cloudData && Array.isArray(cloudData.accounts)) {
+      const savedAccounts = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+
+      // Priority 1: Cloud data (if not empty)
+      if (cloudData && Array.isArray(cloudData.accounts) && cloudData.accounts.length > 0) {
         loadedAccounts = cloudData.accounts;
-        // Also sync to local as cache
         localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(loadedAccounts));
-        // Push all cloud records to local storage to be ready
         if (cloudData.records) {
           for (const id in cloudData.records) {
             localStorage.setItem(`${RECORDS_PREFIX}${id}`, JSON.stringify(cloudData.records[id]));
           }
         }
-      } else {
-        // Fallback to local
-        const savedAccounts = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
-        if (savedAccounts) {
-          try {
-            loadedAccounts = JSON.parse(savedAccounts);
-          } catch(e) {
-            loadedAccounts = [];
-          }
+      } 
+      // Priority 2: Local data
+      else if (savedAccounts) {
+        try {
+          loadedAccounts = JSON.parse(savedAccounts);
+        } catch(e) {
+          loadedAccounts = [];
         }
       }
 
       if (loadedAccounts.length === 0) {
-        const defaultAccount = { id: crypto.randomUUID(), name: '默认账号' };
+        const defaultAccount: Account = { id: generateId(), name: '默认账号', color: '#3b82f6' };
         loadedAccounts = [defaultAccount];
         setAccounts(loadedAccounts);
         setCurrentAccountId(defaultAccount.id);
         
-        // Don't save empty records to server if we just started, 
-        // let the first user record or account switch handle it
+        // Initial setup - skip records sync but flag as loaded
       } else {
         setAccounts(loadedAccounts);
         const initialId = savedCurrentId && loadedAccounts.some(a => a.id === savedCurrentId) 
           ? savedCurrentId 
           : loadedAccounts[0].id;
         
-        // Load target records BEFORE setting ID to avoid race in effect
         const storageKey = `${RECORDS_PREFIX}${initialId}`;
         const saved = localStorage.getItem(storageKey);
         if (saved) {
@@ -198,6 +204,13 @@ export default function App() {
         setCurrentAccountId(initialId);
       }
       setIsLoaded(true);
+      
+      // If server was empty but we have data locally/default, sync it to server for first time
+      if (!cloudData || !cloudData.accounts || cloudData.accounts.length === 0) {
+        setTimeout(() => {
+          persistFullData(loadedAccounts);
+        }, 1000);
+      }
     };
 
     loadFullData();
@@ -265,7 +278,11 @@ export default function App() {
 
   const addAccount = async () => {
     if (!newAccountName.trim()) return;
-    const newAccount = { id: crypto.randomUUID(), name: newAccountName.trim() };
+    const newAccount: Account = { 
+      id: generateId(), 
+      name: newAccountName.trim(),
+      color: `hsl(${Math.random() * 360}, 70%, 50%)`
+    };
     const updatedAccounts = [...accounts, newAccount];
     setAccounts(updatedAccounts);
     localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(updatedAccounts));
@@ -446,7 +463,7 @@ export default function App() {
     if (editingId) {
       setRecords(records.map(r => r.id === editingId ? { ...formData, id: editingId } : r));
     } else {
-      const newEntry: Entry = { ...formData, id: crypto.randomUUID() };
+      const newEntry: Entry = { ...formData, id: generateId() };
       setRecords([newEntry, ...records]);
     }
     setIsFormOpen(false);
@@ -947,10 +964,13 @@ export default function App() {
                       }}
                     >
                       <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div className={cn(
-                          "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
-                          account.id === currentAccountId ? "bg-blue-600 text-white shadow-md shadow-blue-200" : "bg-slate-100 text-slate-500"
-                        )}>
+                        <div 
+                          className={cn(
+                            "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                            account.id === currentAccountId ? "bg-blue-600 text-white shadow-md shadow-blue-200" : "bg-slate-100 text-slate-500"
+                          )}
+                          style={account.color && account.id !== currentAccountId ? { backgroundColor: `${account.color}20`, color: account.color } : {}}
+                        >
                           {account.name.charAt(0)}
                         </div>
                         {editingAccountId === account.id ? (
