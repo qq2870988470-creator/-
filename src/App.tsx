@@ -108,27 +108,32 @@ export default function App() {
     note: ''
   });
 
+  const [isLoaded, setIsLoaded] = useState(false);
+  const lastSavedRecordsRef = useRef<string>('');
+
   // Sync to Server
   const syncWithServer = async (action: 'load' | 'save', dataToSave?: any) => {
     setSyncStatus('syncing');
     try {
       if (action === 'save' && dataToSave) {
-        await fetch('/api/data', {
+        const res = await fetch('/api/data', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(dataToSave)
         });
+        if (!res.ok) throw new Error('Server responded with error');
         setSyncStatus('success');
         setTimeout(() => setSyncStatus('idle'), 2000);
       } else {
         const res = await fetch('/api/data');
+        if (!res.ok) throw new Error('Failed to load from server');
         const data = await res.json();
         setSyncStatus('success');
         setTimeout(() => setSyncStatus('idle'), 2000);
         return data;
       }
     } catch (error) {
-      console.error('Sync failed', error);
+      console.error('Sync failed:', error);
       setSyncStatus('error');
     }
     return null;
@@ -141,18 +146,26 @@ export default function App() {
       const savedCurrentId = localStorage.getItem(CURRENT_ACCOUNT_ID_KEY);
       
       let loadedAccounts: Account[] = [];
-      if (cloudData && cloudData.accounts) {
+      if (cloudData && Array.isArray(cloudData.accounts)) {
         loadedAccounts = cloudData.accounts;
         // Also sync to local as cache
         localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(loadedAccounts));
         // Push all cloud records to local storage to be ready
-        for (const id in cloudData.records) {
-          localStorage.setItem(`${RECORDS_PREFIX}${id}`, JSON.stringify(cloudData.records[id]));
+        if (cloudData.records) {
+          for (const id in cloudData.records) {
+            localStorage.setItem(`${RECORDS_PREFIX}${id}`, JSON.stringify(cloudData.records[id]));
+          }
         }
       } else {
         // Fallback to local
         const savedAccounts = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
-        if (savedAccounts) loadedAccounts = JSON.parse(savedAccounts);
+        if (savedAccounts) {
+          try {
+            loadedAccounts = JSON.parse(savedAccounts);
+          } catch(e) {
+            loadedAccounts = [];
+          }
+        }
       }
 
       if (loadedAccounts.length === 0) {
@@ -160,15 +173,31 @@ export default function App() {
         loadedAccounts = [defaultAccount];
         setAccounts(loadedAccounts);
         setCurrentAccountId(defaultAccount.id);
-        const dataToSave = { accounts: loadedAccounts, records: {} };
-        syncWithServer('save', dataToSave);
+        
+        // Don't save empty records to server if we just started, 
+        // let the first user record or account switch handle it
       } else {
         setAccounts(loadedAccounts);
         const initialId = savedCurrentId && loadedAccounts.some(a => a.id === savedCurrentId) 
           ? savedCurrentId 
           : loadedAccounts[0].id;
+        
+        // Load target records BEFORE setting ID to avoid race in effect
+        const storageKey = `${RECORDS_PREFIX}${initialId}`;
+        const saved = localStorage.getItem(storageKey);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            setRecords(parsed);
+            lastSavedRecordsRef.current = saved;
+          } catch(e) {
+            setRecords([]);
+          }
+        }
+        
         setCurrentAccountId(initialId);
       }
+      setIsLoaded(true);
     };
 
     loadFullData();
@@ -176,6 +205,8 @@ export default function App() {
 
   // Save full data whenever records or accounts change (Debounced / Event driven)
   const persistFullData = async (updatedAccounts?: Account[], specificRecords?: {id: string, data: Entry[]}) => {
+    if (!isLoaded) return; // Prevent overwriting during initial load
+
     const currentAccs = updatedAccounts || accounts;
     const fullData: any = {
       accounts: currentAccs,
@@ -185,7 +216,9 @@ export default function App() {
     currentAccs.forEach(acc => {
       const saved = localStorage.getItem(`${RECORDS_PREFIX}${acc.id}`);
       if (saved) {
-        fullData.records[acc.id] = JSON.parse(saved);
+        try {
+          fullData.records[acc.id] = JSON.parse(saved);
+        } catch(e) {}
       }
     });
 
@@ -198,35 +231,37 @@ export default function App() {
 
   // Load records when currentAccountId changes
   useEffect(() => {
-    if (!currentAccountId) return;
+    if (!currentAccountId || !isLoaded) return;
     
     const storageKey = `${RECORDS_PREFIX}${currentAccountId}`;
     const savedRecords = localStorage.getItem(storageKey);
+    let loaded: Entry[] = [];
     if (savedRecords) {
       try {
-        setRecords(JSON.parse(savedRecords));
+        loaded = JSON.parse(savedRecords);
       } catch (e) {
-        setRecords([]);
+        loaded = [];
       }
-    } else {
-      setRecords([]);
     }
     
+    setRecords(loaded);
+    lastSavedRecordsRef.current = JSON.stringify(loaded); // Update ref to match new account's data
     localStorage.setItem(CURRENT_ACCOUNT_ID_KEY, currentAccountId);
   }, [currentAccountId]);
 
   // Save records for current account locally + trigger cloud sync
   useEffect(() => {
-    if (!currentAccountId) return;
+    if (!currentAccountId || !isLoaded) return;
     const storageKey = `${RECORDS_PREFIX}${currentAccountId}`;
-    const oldData = localStorage.getItem(storageKey);
     const newData = JSON.stringify(records);
     
-    if (oldData !== newData) {
+    // Only save if data actually changed from what we last loaded/saved for this account
+    if (lastSavedRecordsRef.current !== newData) {
       localStorage.setItem(storageKey, newData);
+      lastSavedRecordsRef.current = newData;
       persistFullData(undefined, { id: currentAccountId, data: records });
     }
-  }, [records, currentAccountId]);
+  }, [records, currentAccountId, isLoaded]);
 
   const addAccount = async () => {
     if (!newAccountName.trim()) return;
@@ -264,6 +299,7 @@ export default function App() {
     setAccounts(updatedAccounts);
     localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(updatedAccounts));
     setEditingAccountId(null);
+    await persistFullData(updatedAccounts);
   };
 
   const currentAccountName = accounts.find(a => a.id === currentAccountId)?.name || '未知账号';
@@ -474,8 +510,13 @@ export default function App() {
                   syncStatus === 'success' ? "bg-emerald-500" :
                   syncStatus === 'error' ? "bg-rose-500" : "bg-slate-300"
                 )} />
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                  {syncStatus === 'syncing' ? 'Syncing...' : 'Cloud Verified'}
+                <span 
+                  className="text-[10px] text-slate-400 font-bold uppercase tracking-wider cursor-pointer hover:text-slate-600 transition-colors"
+                  onClick={() => syncStatus === 'error' && persistFullData()}
+                >
+                  {syncStatus === 'syncing' ? '正在同步云端...' : 
+                   syncStatus === 'error' ? '本地模式 (点击重试同步)' : 
+                   '数据已安全同步至云端'}
                 </span>
               </div>
             </div>
@@ -494,23 +535,33 @@ export default function App() {
           </button>
         </div>
 
-        <div className="flex items-center gap-2 relative z-10">
-          <div className="hidden md:flex items-center gap-1.5 mr-2">
-            <button onClick={exportData} className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-all">
-              <Download size={18} />
-            </button>
-            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-all">
-              <Upload size={18} />
+          <div className="flex items-center gap-2 relative z-10">
+            <div className="hidden md:flex items-center gap-1.5 mr-2">
+              <button 
+                onClick={exportData} 
+                title="导出备份 (JSON)"
+                className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all flex items-center gap-1"
+              >
+                <Download size={18} />
+                <span className="text-[10px] font-bold">导出</span>
+              </button>
+              <button 
+                onClick={() => fileInputRef.current?.click()} 
+                title="导入备份"
+                className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all flex items-center gap-1"
+              >
+                <Upload size={18} />
+                <span className="text-[10px] font-bold">导入</span>
+              </button>
+            </div>
+            <button 
+              onClick={() => setIsFormOpen(true)}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg flex items-center gap-2.5 transition-all active:scale-[0.97] shadow-lg shadow-blue-200 text-sm font-bold border border-blue-400/20"
+            >
+              <Plus size={18} strokeWidth={3} />
+              <span className="hidden sm:inline">新增行程</span>
             </button>
           </div>
-          <button 
-            onClick={() => setIsFormOpen(true)}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg flex items-center gap-2.5 transition-all active:scale-[0.97] shadow-lg shadow-blue-200 text-sm font-bold border border-blue-400/20"
-          >
-            <Plus size={18} strokeWidth={3} />
-            <span className="hidden sm:inline">新增行程</span>
-          </button>
-        </div>
       </header>
 
       <main className="max-w-[1500px] mx-auto px-6 py-10 gap-10 grid lg:grid-cols-12 auto-rows-min relative z-10">
@@ -944,7 +995,7 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="pt-4 border-t border-slate-100">
+                <div className="pt-4 border-t border-slate-100 space-y-4">
                   <div className="flex items-center gap-2">
                     <input 
                       type="text" 
@@ -962,6 +1013,13 @@ export default function App() {
                       <Plus size={20} strokeWidth={3} />
                     </button>
                   </div>
+                  
+                  <div className="p-3 bg-blue-50/50 rounded-xl border border-blue-100 flex items-start gap-3">
+                    <AlertCircle size={16} className="text-blue-500 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-blue-700 font-medium leading-relaxed">
+                      注意：数据默认保存在当前浏览器的本地缓存（LocalStorage）中。跨浏览器或下载代码运行需点击上方 <span className="font-bold underline">导出</span> 按钮备份数据，完成后在新处点击 <span className="font-bold underline">导入</span> 恢复。
+                    </p>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -969,6 +1027,13 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={importData} 
+        accept=".json" 
+        className="hidden" 
+      />
     </div>
   );
 }

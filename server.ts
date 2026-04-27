@@ -29,9 +29,11 @@ async function startServer() {
   // API 路由: 获取所有同步数据
   app.get("/api/data", async (req, res) => {
     try {
+      console.log(`[GET] /api/data - Reading from ${DATA_FILE}`);
       const content = await fs.readFile(DATA_FILE, "utf-8");
       res.json(JSON.parse(content));
     } catch (error) {
+      console.error("[GET] /api/data error:", error);
       res.status(500).json({ error: "Failed to read data" });
     }
   });
@@ -39,9 +41,12 @@ async function startServer() {
   // API 路由: 保存所有同步数据
   app.post("/api/data", async (req, res) => {
     try {
+      const dataSize = JSON.stringify(req.body).length;
+      console.log(`[POST] /api/data - Saving ${dataSize} bytes to ${DATA_FILE}`);
       await fs.writeFile(DATA_FILE, JSON.stringify(req.body, null, 2));
       res.json({ success: true });
     } catch (error) {
+      console.error("[POST] /api/data error:", error);
       res.status(500).json({ error: "Failed to save data" });
     }
   });
