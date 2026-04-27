@@ -74,7 +74,6 @@ interface Entry {
 interface Account {
   id: string;
   name: string;
-  color?: string;
 }
 
 const generateId = () => {
@@ -95,6 +94,10 @@ export default function App() {
   const [records, setRecords] = useState<Entry[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
+
+  const [isLoaded, setIsLoaded] = useState(false);
+  const lastSavedRecordsRef = useRef<string>('');
+
   const [newAccountName, setNewAccountName] = useState('');
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [tempAccountName, setTempAccountName] = useState('');
@@ -116,9 +119,6 @@ export default function App() {
     cost: 0,
     note: ''
   });
-
-  const [isLoaded, setIsLoaded] = useState(false);
-  const lastSavedRecordsRef = useRef<string>('');
 
   // Sync to Server
   const syncWithServer = async (action: 'load' | 'save', dataToSave?: any) => {
@@ -170,19 +170,18 @@ export default function App() {
       // Priority 2: Local data
       else if (savedAccounts) {
         try {
-          loadedAccounts = JSON.parse(savedAccounts);
+          const parsed = JSON.parse(savedAccounts);
+          loadedAccounts = Array.isArray(parsed) ? parsed : [];
         } catch(e) {
           loadedAccounts = [];
         }
       }
 
-      if (loadedAccounts.length === 0) {
-        const defaultAccount: Account = { id: generateId(), name: '默认账号', color: '#3b82f6' };
+      if (!Array.isArray(loadedAccounts) || loadedAccounts.length === 0) {
+        const defaultAccount: Account = { id: generateId(), name: '默认账号' };
         loadedAccounts = [defaultAccount];
         setAccounts(loadedAccounts);
         setCurrentAccountId(defaultAccount.id);
-        
-        // Initial setup - skip records sync but flag as loaded
       } else {
         setAccounts(loadedAccounts);
         const initialId = savedCurrentId && loadedAccounts.some(a => a.id === savedCurrentId) 
@@ -214,7 +213,7 @@ export default function App() {
     };
 
     loadFullData();
-  }, []);
+  }, [isLoaded]);
 
   // Save full data whenever records or accounts change (Debounced / Event driven)
   const persistFullData = async (updatedAccounts?: Account[], specificRecords?: {id: string, data: Entry[]}) => {
@@ -241,6 +240,17 @@ export default function App() {
 
     await syncWithServer('save', fullData);
   };
+
+  // Auto-recovery for accounts list
+  useEffect(() => {
+    if (isAccountModalOpen && isLoaded && accounts.length === 0) {
+      console.log('Detecting empty accounts list, recovering...');
+      const defaultAccount: Account = { id: generateId(), name: '默认账号' };
+      setAccounts([defaultAccount]);
+      setCurrentAccountId(defaultAccount.id);
+      persistFullData([defaultAccount]);
+    }
+  }, [isAccountModalOpen, isLoaded, accounts.length]);
 
   // Load records when currentAccountId changes
   useEffect(() => {
@@ -280,8 +290,7 @@ export default function App() {
     if (!newAccountName.trim()) return;
     const newAccount: Account = { 
       id: generateId(), 
-      name: newAccountName.trim(),
-      color: `hsl(${Math.random() * 360}, 70%, 50%)`
+      name: newAccountName.trim()
     };
     const updatedAccounts = [...accounts, newAccount];
     setAccounts(updatedAccounts);
@@ -581,12 +590,12 @@ export default function App() {
           </div>
       </header>
 
-      <main className="max-w-[1500px] mx-auto px-6 py-10 gap-10 grid lg:grid-cols-12 auto-rows-min relative z-10">
-        {/* Left Column: Calendar */}
-        <section className="lg:col-span-8 space-y-6">
+      <main className="max-w-[1700px] mx-auto px-6 py-10 gap-10 grid lg:grid-cols-12 auto-rows-min relative z-10">
+        {/* Left Column: Schedule/Calendar */}
+        <section className="lg:col-span-8 space-y-6 order-1">
           <div className="flex items-end justify-between px-2">
             <div>
-              <h2 className="font-black text-2xl tracking-tight text-slate-900">行程日历</h2>
+              <h2 className="font-black text-2xl tracking-tight text-slate-900">行程日程</h2>
               <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mt-1 ml-0.5">Stay Visualization</p>
             </div>
             <div className="flex items-center gap-4">
@@ -608,7 +617,7 @@ export default function App() {
                   onClick={() => setCurrentMonth(subDays(currentMonth, -30))}
                   className="p-1.5 hover:bg-slate-50 rounded-lg transition-colors text-slate-400 hover:text-slate-900"
                 >
-                  <ChevronRight size={18} />
+                  <Search size={18} />
                 </button>
               </div>
             </div>
@@ -619,47 +628,56 @@ export default function App() {
           </div>
         </section>
 
-        {/* Right Column: Stats & List */}
-        <section className="lg:col-span-4 space-y-8">
-          {/* Stats Grid */}
-          <div className="grid grid-cols-2 gap-4">
-            <StatCardSmall 
-              label="累计支出" 
-              value={`¥${stats.totalCost.toLocaleString('zh-CN', { minimumFractionDigits: 0 })}`} 
-              color="blue"
-            />
-            <StatCardSmall 
-              label="累计积分" 
-              value={stats.totalPoints.toLocaleString()} 
-              color="orange"
-            />
-            <StatCardSmall 
-              label="积分净赚" 
-              value={`¥${stats.memberDayProfit.toLocaleString('zh-CN', { minimumFractionDigits: 0 })}`} 
-              color="emerald"
-            />
-            <StatCardSmall 
-              label="积分总价值" 
-              value={`¥${stats.estimatedValue.toLocaleString('zh-CN', { minimumFractionDigits: 0 })}`} 
-              color="rose"
+        {/* Right Column: Data & Search */}
+        <section className="lg:col-span-4 space-y-6 order-2">
+          {/* Search Box - To the top of the right column */}
+          <div className="relative group">
+            <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+            <input 
+              type="text" 
+              placeholder="搜索酒店名称关键词..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-[20px] text-sm font-bold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500 transition-all shadow-sm"
             />
           </div>
 
-          <div className="space-y-6">
-            {/* Search Box - More Subtle */}
-            <div className="relative group">
-              <Search size={14} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
-              <input 
-                type="text" 
-                placeholder="搜索酒店名称关键词..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-11 pr-4 py-3.5 bg-white border border-slate-200 rounded-[20px] text-sm font-bold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500 transition-all shadow-sm"
-              />
+          {/* Stats Overview */}
+          <div className="bg-white rounded-[32px] p-6 border border-slate-200 shadow-sm space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="font-black text-sm text-slate-900 uppercase tracking-wider">数据统计</h3>
+              <TrendingUp size={16} className="text-blue-500" />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <StatCardSmall label="累计支出" value={`¥${stats.totalCost.toLocaleString()}`} color="blue" />
+              <StatCardSmall label="累计积分" value={stats.totalPoints.toLocaleString()} color="orange" />
+              <StatCardSmall label="积分利润" value={`¥${stats.memberDayProfit.toLocaleString()}`} color="emerald" />
+              <StatCardSmall label="积分价值" value={`¥${stats.estimatedValue.toLocaleString()}`} color="rose" />
             </div>
 
-            {/* Order List */}
-            <div className="bg-white rounded-[32px] p-8 border border-slate-200 shadow-[0_20px_50px_rgba(0,0,0,0.03)] space-y-6 flex flex-col h-[520px]">
+            {/* Performance Chart */}
+            <div className="h-[140px] w-full pt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData}>
+                  <defs>
+                    <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.8}/>
+                      <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.1}/>
+                    </linearGradient>
+                  </defs>
+                  <Tooltip 
+                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '10px', fontWeight: 'bold' }}
+                    cursor={{ fill: 'transparent' }}
+                  />
+                  <Bar dataKey="points" fill="url(#barGradient)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Order Details List */}
+          <div className="bg-white rounded-[32px] p-8 border border-slate-200 shadow-[0_20px_50px_rgba(0,0,0,0.03)] space-y-6 flex flex-col min-h-[400px]">
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <h3 className="font-black text-lg text-slate-900 tracking-tight">订单明细</h3>
@@ -726,9 +744,8 @@ export default function App() {
               </AnimatePresence>
             </div>
           </div>
-        </div>
-      </section>
-    </main>
+        </section>
+      </main>
 
       {/* Form Dialog */}
       <AnimatePresence>
@@ -964,13 +981,10 @@ export default function App() {
                       }}
                     >
                       <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div 
-                          className={cn(
-                            "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
-                            account.id === currentAccountId ? "bg-blue-600 text-white shadow-md shadow-blue-200" : "bg-slate-100 text-slate-500"
-                          )}
-                          style={account.color && account.id !== currentAccountId ? { backgroundColor: `${account.color}20`, color: account.color } : {}}
-                        >
+                        <div className={cn(
+                          "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                          account.id === currentAccountId ? "bg-blue-600 text-white shadow-md shadow-blue-200" : "bg-slate-100 text-slate-500"
+                        )}>
                           {account.name.charAt(0)}
                         </div>
                         {editingAccountId === account.id ? (
